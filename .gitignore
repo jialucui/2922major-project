@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+data/logs/
+data/recordings/
+firmware/build/

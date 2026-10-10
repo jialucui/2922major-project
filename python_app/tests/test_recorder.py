@@ -2,6 +2,8 @@ import csv
 from pathlib import Path
 import tempfile
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
 
 from ppg_monitor.protocol import Packet, Status
 from ppg_monitor.recorder import SessionRecorder
@@ -26,6 +28,30 @@ def analysis(host_bpm):
 
 
 class RecorderTests(unittest.TestCase):
+    def test_duration_is_frozen_after_stop_even_when_clock_starts_at_zero(self):
+        recorder = SessionRecorder()
+        with patch("ppg_monitor.recorder.time.monotonic", return_value=0):
+            recorder.start()
+        with patch("ppg_monitor.recorder.time.monotonic", return_value=10):
+            recorder.stop()
+        self.assertEqual(recorder.summary().duration_seconds, 10)
+
+    def test_summary_ignores_poor_quality_and_nonfinite_measurements(self):
+        recorder = SessionRecorder()
+        recorder.start()
+        packet = Packet(0, 0, None, Status.RECORDING, (0,) * 50)
+        recorder.add_packet(packet, replace(analysis(70), quality=SignalQuality.POOR))
+        recorder.add_packet(packet, analysis(float("nan")))
+        recorder.add_packet(packet, analysis(80))
+        self.assertEqual(recorder.summary().valid_measurements, 1)
+        self.assertEqual(recorder.summary().average_bpm, 80)
+
+    def test_unrecorded_blocks_are_not_exported(self):
+        recorder = SessionRecorder()
+        recorder.start()
+        recorder.add_packet(Packet(0, 0, None, Status(0), (0,) * 50), analysis(70))
+        self.assertEqual(recorder.summary().sample_count, 0)
+
     def test_csv_exports_samples_and_summary_excludes_unavailable_bpm(self):
         recorder = SessionRecorder()
         recorder.start()

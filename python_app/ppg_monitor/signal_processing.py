@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
+import math
+from numbers import Integral
 
 import numpy as np
-from scipy.signal import butter, find_peaks, sosfiltfilt
+from scipy.signal import butter, find_peaks, sosfilt, sosfilt_zi
 
 from .protocol import SAMPLE_RATE_HZ, SAMPLES_PER_PACKET
 
@@ -41,17 +43,25 @@ class PPGProcessor:
         history_seconds: int = 12,
         minimum_signal_range: float = 8.0,
     ) -> None:
-        if sample_rate_hz <= 0 or history_seconds < 5:
-            raise ValueError("sample rate must be positive and history must be at least 5 seconds")
+        if not isinstance(sample_rate_hz, Integral) or sample_rate_hz <= 8:
+            raise ValueError("sample rate must be an integer above 8 Hz for the 4 Hz filter cutoff")
+        if not isinstance(history_seconds, Integral) or history_seconds < 5:
+            raise ValueError("history must be an integer of at least 5 seconds")
+        if not math.isfinite(minimum_signal_range) or minimum_signal_range <= 0:
+            raise ValueError("minimum signal range must be positive and finite")
         self.sample_rate_hz = sample_rate_hz
         self.minimum_signal_range = minimum_signal_range
         self.history_size = sample_rate_hz * history_seconds
         self._raw: deque[float] = deque(maxlen=self.history_size)
+        self._filtered: deque[float] = deque(maxlen=self.history_size)
+        self._filter_state = None
         self._sample_count = 0
         self._sos = butter(3, (0.5, 4.0), btype="bandpass", fs=sample_rate_hz, output="sos")
 
     def reset(self) -> None:
         self._raw.clear()
+        self._filtered.clear()
+        self._filter_state = None
         self._sample_count = 0
 
     def process_block(
@@ -62,18 +72,23 @@ class PPGProcessor:
     ) -> AnalysisResult:
         if len(samples) != SAMPLES_PER_PACKET:
             raise ValueError(f"exactly {SAMPLES_PER_PACKET} samples are required")
-        if any(not 0 <= int(sample) <= 0xFFFF for sample in samples):
+        if any(not isinstance(sample, Integral) or not 0 <= sample <= 0xFFFF for sample in samples):
             raise ValueError("samples must be unsigned 16-bit values")
+        block = np.asarray(samples, dtype=np.float64)
+        no_signal = sensor_present is False or np.ptp(block) < self.minimum_signal_range or np.std(block) < 2.0
+        if not timing_valid or no_signal:
+            self.reset()
         self._raw.extend(float(sample) for sample in samples)
         self._sample_count += len(samples)
+        if self._filter_state is None:
+            self._filter_state = sosfilt_zi(self._sos) * block[0]
+        filtered_block, self._filter_state = sosfilt(self._sos, block, zi=self._filter_state)
+        self._filtered.extend(filtered_block)
 
         raw_array = np.asarray(self._raw, dtype=np.float64)
         count = len(raw_array)
-        times = np.arange(count, dtype=np.float64) / self.sample_rate_hz
-        if count >= 20:
-            filtered = sosfiltfilt(self._sos, raw_array)
-        else:
-            filtered = raw_array - np.mean(raw_array)
+        times = np.arange(self._sample_count - count, self._sample_count, dtype=np.float64) / self.sample_rate_hz
+        filtered = np.asarray(self._filtered, dtype=np.float64)
         intervals = self._beat_intervals(filtered) if count >= 100 else []
 
         raw_range = float(np.ptp(raw_array)) if count else 0.0
@@ -107,7 +122,7 @@ class PPGProcessor:
                         dominant_frequency = candidate_hz
                         fft_bpm = candidate_bpm
 
-        return AnalysisResult(
+        result = AnalysisResult(
             raw=tuple(float(value) for value in raw_array),
             filtered=tuple(float(value) for value in filtered),
             times_s=tuple(float(value) for value in times),
@@ -121,6 +136,11 @@ class PPGProcessor:
             valid_interval_count=valid_intervals,
             signal_amplitude=filtered_range,
         )
+        # Neither irregularly timed samples nor a no-contact block may contribute
+        # to the next uniform-rate analysis window.
+        if not timing_valid or no_signal:
+            self.reset()
+        return result
 
     def _classify_quality(
         self,

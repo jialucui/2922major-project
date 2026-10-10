@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import csv
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import time
 
 from .protocol import Packet, SAMPLE_PERIOD_MS, Status
-from .signal_processing import AnalysisResult
+from .signal_processing import AnalysisResult, SignalQuality
 
 
 CSV_FIELDS = (
@@ -25,6 +26,7 @@ CSV_FIELDS = (
     "signal_quality",
     "status_flags",
     "recording",
+    "alarm",
     "session_duration_s",
     "session_average_bpm",
     "session_min_bpm",
@@ -45,7 +47,7 @@ class SessionSummary:
 class SessionRecorder:
     def __init__(self) -> None:
         self.active = False
-        self._started_at = 0.0
+        self._started_at: float | None = None
         self._stopped_at: float | None = None
         self._rows: list[dict[str, object]] = []
         self._valid_bpm: list[float] = []
@@ -64,10 +66,12 @@ class SessionRecorder:
             self._stopped_at = time.monotonic()
             self.active = False
 
-    def add_packet(self, packet: Packet, analysis: AnalysisResult) -> None:
-        if not self.active:
+    def add_packet(self, packet: Packet, analysis: AnalysisResult, alarm: str = "UNAVAILABLE") -> None:
+        if not self.active or not packet.status & Status.RECORDING:
             return
-        if analysis.host_bpm is not None:
+        if len(analysis.filtered) < len(packet.samples):
+            raise ValueError("analysis must contain a filtered value for each sample")
+        if analysis.quality == SignalQuality.GOOD and analysis.host_bpm is not None and math.isfinite(analysis.host_bpm):
             self._valid_bpm.append(analysis.host_bpm)
         received_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         recording = bool(packet.status & Status.RECORDING)
@@ -86,12 +90,13 @@ class SessionRecorder:
                     "signal_quality": analysis.quality.value,
                     "status_flags": int(packet.status),
                     "recording": recording,
+                    "alarm": alarm,
                 }
             )
 
     def summary(self) -> SessionSummary:
         stopped_at = self._stopped_at if self._stopped_at is not None else time.monotonic()
-        duration = max(0.0, stopped_at - self._started_at) if self._started_at else 0.0
+        duration = max(0.0, stopped_at - self._started_at) if self._started_at is not None else 0.0
         if not self._valid_bpm:
             return SessionSummary(duration, None, None, None, 0, len(self._rows))
         values = self._valid_bpm
