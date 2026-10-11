@@ -163,8 +163,6 @@ class CommunicationManager:
                 self._serial = stream
                 stream.reset_input_buffer()
                 self._last_packet_at = self._clock()
-                self._set_state(ConnectionState.CONNECTED, self._last_packet_at)
-                self._last_error = None
             except (OSError, serial.SerialException) as error:
                 self._lost(str(error), self._clock())
                 return
@@ -184,6 +182,10 @@ class CommunicationManager:
                     self._emit("error", f"Ignored duplicate/out-of-order packet {packet.sequence}", now)
                     continue
                 self._last_packet_at = now
+                # Opening a paired virtual port does not prove that Bluetooth
+                # is connected. Confirm the link with a valid, new device frame.
+                self._set_state(ConnectionState.CONNECTED, now)
+                self._last_error = None
                 self._emit("packet", packet, now)
             if self._parser.invalid_frames != invalid_before:
                 self._emit("error", "Invalid packet discarded; serial stream resynchronized", now)

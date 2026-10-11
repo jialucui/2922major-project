@@ -68,6 +68,34 @@ class CommunicationTests(unittest.TestCase):
         self.assertEqual(self.opens[0][1]["timeout"], 0.1)
         self.assertEqual(self.opens[0][1]["write_timeout"], 0.3)
 
+    def test_connected_requires_a_valid_device_packet(self):
+        events = self.manager.poll()
+        self.assertEqual([e.value for e in events if e.kind == "state"],
+                         [ConnectionState.CONNECTING])
+        self.streams[0].data.extend(b"not a PPG frame")
+        self.manager._step()
+        self.assertFalse(any(e.value == ConnectionState.CONNECTED
+                             for e in self.manager.poll() if e.kind == "state"))
+        self.send()
+        events = self.manager.poll()
+        self.assertEqual([e.kind for e in events if e.kind != "error"], ["state", "packet"])
+        self.assertEqual(events[0].value, ConnectionState.CONNECTED)
+
+    def test_reopened_port_stays_reconnecting_until_data_arrives(self):
+        self.send()
+        self.manager.poll()
+        self.clock.now = 5
+        self.manager._step()
+        self.manager.poll()
+        self.clock.now = 6
+        self.manager._step()
+        self.assertFalse(any(e.value == ConnectionState.CONNECTED
+                             for e in self.manager.poll() if e.kind == "state"))
+        self.send()
+        events = self.manager.poll()
+        self.assertEqual([e.kind for e in events], ["state", "packet"])
+        self.assertEqual(events[0].value, ConnectionState.CONNECTED)
+
     def test_timeout_occurs_at_five_seconds_and_retries_after_one_second(self):
         self.manager.poll()
         self.clock.now = 4.999
