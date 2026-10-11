@@ -11,12 +11,13 @@
 #ifndef LED_PIN
 #define LED_PIN 32
 #endif
-// Assumptions to verify: switch shorts GPIO33 to GND; LED lights when HIGH.
+// GPIO33 diagnosis on the connected board: the switch drives HIGH when pressed.
+// Keep an unpressed input LOW with the internal pull-down. LED polarity is configurable.
 #ifndef BUTTON_ACTIVE_LEVEL
-#define BUTTON_ACTIVE_LEVEL LOW
+#define BUTTON_ACTIVE_LEVEL HIGH
 #endif
 #ifndef BUTTON_INPUT_MODE
-#define BUTTON_INPUT_MODE INPUT_PULLUP
+#define BUTTON_INPUT_MODE INPUT_PULLDOWN
 #endif
 #ifndef LED_ACTIVE_LEVEL
 #define LED_ACTIVE_LEVEL HIGH
